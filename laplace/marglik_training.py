@@ -6,6 +6,7 @@ from torch.nn import CrossEntropyLoss, MSELoss
 from torch.nn.utils import parameters_to_vector
 import warnings
 import logging
+import wandb
 
 from laplace import Laplace
 from laplace.curvature import AsdlGGN
@@ -119,6 +120,10 @@ def marglik_training(
         warnings.warn('Weight decay is handled and optimized. Will be set to 0.')
         optimizer_kwargs['weight_decay'] = 0.0
 
+    wandb.init()
+
+    print('Initializing hyperparameters...')
+    
     # get device, data set size N, number of layers H, number of parameters P
     device = parameters_to_vector(model.parameters()).device
     N = len(train_loader.dataset)
@@ -161,6 +166,7 @@ def marglik_training(
         if scheduler_kwargs is None:
             scheduler_kwargs = dict()
         scheduler = scheduler_cls(optimizer, **scheduler_kwargs)
+    wandb.config.update(n_hypersteps=n_hypersteps, n_epochs_burnin=n_epochs_burnin, prior_structure=prior_structure, hessian_structure=hessian_structure, backend=backend.__name__, optimizer=optimizer_cls.__name__, scheduler=scheduler_cls.__name__ if scheduler_cls is not None else None, temperature=temperature, prior_prec_init=prior_prec_init, sigma_noise_init=sigma_noise_init, likelihood=likelihood, batch_size=train_loader.batch_size, n_data=N, n_layers=H, n_params=P)
 
     # set up hyperparameter optimizer
     hyper_optimizer = Adam(hyperparameters, lr=lr_hyp)
@@ -170,7 +176,8 @@ def marglik_training(
     best_precision = None
     losses = list()
     margliks = list()
-
+    wandb.watch(model)
+    
     for epoch in range(1, n_epochs + 1):
         epoch_loss = 0
         epoch_perf = 0
@@ -200,6 +207,9 @@ def marglik_training(
                 scheduler.step()
 
         losses.append(epoch_loss / N)
+
+        wandb.log({'loss': losses[-1]})
+
 
         # compute validation error to report during training
         logging.info(f'MARGLIK[epoch={epoch}]: network training. Loss={losses[-1]:.3f}.' +
@@ -231,6 +241,7 @@ def marglik_training(
             marglik = -lap.log_marginal_likelihood(prior_prec, sigma_noise)
             marglik.backward()
             hyper_optimizer.step()
+            wandb.log({'marglik': marglik.item()})
             margliks.append(marglik.item())
 
         # early stopping on marginal likelihood
